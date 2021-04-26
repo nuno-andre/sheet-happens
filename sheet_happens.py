@@ -6,13 +6,14 @@ https://github.com/nuno-andre/sheet-happens
 Copyright (C) 2017-2021 Nuno André <mail@nunoand.re>
 SPDX-License-Identifier: MIT
 """
-__version__ = '0.0.3'
+__version__ = '0.0.4'
 __description__ = 'Simple Excel 2007+ to CSV and JSON converter without dependencies'
 
 
 from string import digits, ascii_uppercase
 from xml.etree import ElementTree
 from zipfile import ZipFile, BadZipFile
+from functools import wraps
 from pathlib import Path
 import json
 import csv
@@ -28,17 +29,30 @@ MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 NS = {'namespaces': {'main': MAIN}}
 
 
+def lazyproperty(method):
+    '''Decorator for lazy evaluated properties.
+    '''
+    _name = "_" + method.__name__
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if not hasattr(self, _name):
+            setattr(self, _name, method(self, *args, **kwargs))
+        return getattr(self, _name)
+
+    return property(wrapper, doc=method.__doc__)
+
+
 class Book:
     '''Excel file.
 
     Args:
-        path: Archive's path
+        path: Archive's path.
         sanitize: Trims strings and replaces line feeds with whitespaces.
     '''
     def __init__(self, path, sanitize=True):
         self.path     = Path(path).resolve()
         self.sanitize = sanitize
-        self._shared  = None
 
     def __iter__(self):
         return self.sheets.__iter__()
@@ -46,25 +60,24 @@ class Book:
     def __next__(self):
         return next(self.__iter__())
 
-    @property
+    @lazyproperty
     def shared(self):
         '''Shared strings
         '''
-        if self._shared is None:
-            with self.zipfile.open('xl/sharedStrings.xml') as f:
-                tree = ElementTree.fromstring(f.read())
-            nodes = tree.findall('.//main:t', **NS)
-            self._shared = [x.text for x in nodes]
-        return self._shared
+        with self.zipfile.open('xl/sharedStrings.xml') as f:
+            tree = ElementTree.fromstring(f.read())
+            return [x.text for x in tree.iterfind('.//main:t', **NS)]
 
-    @property
+    @lazyproperty
     def sheets(self):
+        sheets = list()
         with ZipFile(str(self.path), 'r') as z:
             self.zipfile = z
             for path in z.namelist():
                 if path.startswith('xl/worksheets/sheet'):
                     with z.open(path) as f:
-                        yield Sheet(Path(path), f.read(), self)
+                        sheets.append(Sheet(Path(path), f.read(), self))
+        return sheets
 
 
 class Sheet:
@@ -78,12 +91,10 @@ class Sheet:
         #     search for and sanitize sheet's name
         self.name    = path.stem
         self.cols    = dict()
-        self._dict   = None
-        self._parsed = None
         self.width, self.height = self.shape()
 
     def col(self, col):
-        '''Converts and caches a letter-based col to 0-based coord
+        '''Converts and caches a letter-based col to 0-based coord.
         '''
         x = reversed([ascii_uppercase.find(l) for l in col])
         x = sum(26 * i + n for i, n in enumerate(x))
@@ -91,7 +102,7 @@ class Sheet:
         return x
 
     def coords(self, cell):
-        '''Converts Excel coords to 0-based
+        '''Converts Excel coords to 0-based.
         '''
         col = ''.join(x for x in cell if x not in digits)
         row = int(''.join(x for x in cell if x not in col)) - 1
@@ -99,12 +110,12 @@ class Sheet:
         return col, row
 
     def cell(self, node):
-        '''Extracts cell's coords
+        '''Extracts cell's coords.
         '''
         return self.coords(node.attrib['r'])
 
     def shape(self):
-        '''Returns table dimensions
+        '''Returns table dimensions.
         '''
         dim    = self.tree.find('.//main:dimension', **NS)
         nw, se = dim.attrib['ref'].split(':')
@@ -112,7 +123,7 @@ class Sheet:
         return width, height
 
     def value(self, node):
-        '''Returns cell's value
+        '''Returns cell's value.
         '''
         v = node.find('.//main:v', **NS).text
         if node.attrib.get('t') == 's':
@@ -125,53 +136,49 @@ class Sheet:
         else:
             return value
 
-    @property
+    @lazyproperty
     def parsed(self):
-        '''Returns parsed sheet preallocating rows
+        '''Returns parsed sheet preallocating rows.
         '''
-        if self._parsed is None:
-            self._parsed = [[None for _ in range(self.width)]
-                for _ in range(self.height)]
+        parsed = [[None for _ in range(self.width)]
+                  for _ in range(self.height)]
 
-            for node in self.tree.findall('.//main:c', **NS):
-                col, row = self.cell(node)
-                value    = self.value(node)
-                self._parsed[row][col] = value
-        return self._parsed
+        for node in self.tree.findall('.//main:c', **NS):
+            col, row = self.cell(node)
+            parsed[row][col] = self.value(node)
+
+        return parsed
 
     def parse(self):
-        '''Returns a parsed rows generator
+        '''Returns a parsed rows generator.
         '''
         row     = [None for _ in range(self.width)]
         lastcol = self.width - 1
 
         for node in self.tree.findall('.//main:c', **NS):
             col, _   = self.cell(node)
-            value    = self.value(node)
-            row[col] = value
+            row[col] = self.value(node)
             if col == lastcol:
                 yield row
                 row = [None for _ in range(self.width)]
 
     def to_dict(self):
-        '''Returns a list of dicts generator
+        '''Returns a list of dicts generator.
         '''
         output = self.parse()
         header = next(output)
         return (dict(zip(header, row)) for row in output)
 
-    @property
+    @lazyproperty
     def dict(self):
-        if self._dict is None:
-            if self._parsed:
-                header, *rows = self.parsed
-                self._dict = [dict(zip(header, row)) for row in rows]
-            else:
-                self._dict = list(self.to_dict())
-        return self._dict
+        if hasattr(self, '_parsed'):
+            header, *rows = self.parsed
+            return [dict(zip(header, row)) for row in rows]
+        else:
+            return list(self.to_dict())
 
     def filedes(self, ext, path, mode='w', newline='\n'):
-        '''Returns a file descriptor
+        '''Returns a file descriptor.
         '''
         path = Path(path or self.book.path)
         if path.is_dir():
@@ -183,7 +190,7 @@ class Sheet:
         return open(str(path), mode, newline=newline)
 
     def to_csv(self, path=None):
-        '''Path defaults to <file_path>/<file_stem>.<sheet_no>.csv
+        '''Path defaults to `<file_path>/<file_stem>.<sheet_no>.csv`.
         '''
         with self.filedes('csv', path, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -193,14 +200,14 @@ class Sheet:
         return True
 
     def to_json(self, path=None):
-        '''Path defaults to <file_path>/<file_stem>.<sheet_no>.json
+        '''Path defaults to `<file_path>/<file_stem>.<sheet_no>.json`.
         '''
         with self.filedes('json', path, 'w', newline='') as f:
             json.dump(self.dict, f, indent=4, ensure_ascii=False)
             return True
 
     def to_yaml(self, path=None):
-        '''Path defaults to <file_path>/<file_stem>.<sheet_no>.yaml
+        '''Path defaults to `<file_path>/<file_stem>.<sheet_no>.yaml`.
         '''
         with self.filedes('json', path, 'w', newline='') as f:
             yaml.dump(list(self.to_dict()), default_flow_style=False)
