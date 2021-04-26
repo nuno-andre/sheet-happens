@@ -6,18 +6,18 @@ https://github.com/nuno-andre/sheet-happens
 Copyright (C) 2017-2021 Nuno André <mail@nunoand.re>
 SPDX-License-Identifier: MIT
 """
-__version__ = 0, 0, 5
+__version__ = 0, 0, 6
 __description__ = ('Simple Excel 2007+ to CSV and JSON converter without '
                    'dependencies')
 
 
 from xml.etree.ElementTree import fromstring
-from string import digits, ascii_uppercase
 from zipfile import ZipFile, BadZipFile
 from functools import wraps
 from pathlib import Path
 import json
 import csv
+import re
 try:
     import yaml
     __description__ = __description__.replace(
@@ -26,6 +26,7 @@ except ImportError:
     yaml = None
 
 
+CELL = re.compile(r'^([A-Z]+)([0-9]+)$').match
 MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 NS = {'namespaces': {'main': MAIN}}
@@ -34,7 +35,7 @@ NS = {'namespaces': {'main': MAIN}}
 def lazyproperty(method):
     '''Decorator for lazy evaluated properties.
     '''
-    _name = "_" + method.__name__
+    _name = '_' + method.__name__
 
     @wraps(method)
     def wrapper(self, *args, **kwargs):
@@ -43,6 +44,24 @@ def lazyproperty(method):
         return getattr(self, _name)
 
     return property(wrapper, doc=method.__doc__)
+
+
+class _colindex(dict):
+    '''Converts and caches a letter-based col to 0-based coord.
+    '''
+    def __missing__(self, col):
+        v = self[col] = sum(26 * i + ord(x) - 65 for i, x in enumerate(col))
+        return v
+
+
+_cols = _colindex()
+
+
+def _coords(cell):
+    '''Converts Excel coords to 0-based.
+    '''
+    col, row = CELL(cell).groups()
+    return _cols[col], int(row) - 1
 
 
 class Book:
@@ -98,7 +117,6 @@ class Sheet:
         self.book = book
         self.path = path
         self.tree = fromstring(text)
-        self.cols = dict()
         self.width, self.height = self.shape()
 
     @lazyproperty
@@ -107,33 +125,12 @@ class Sheet:
         ix  = int(self.path.stem.replace('sheet', ''))
         return '{i:0{p}}_{n}'.format(i=ix, p=pad, n=self.book._names[ix])
 
-    def col(self, col):
-        '''Converts and caches a letter-based col to 0-based coord.
-        '''
-        x = reversed([ascii_uppercase.find(l) for l in col])
-        x = sum(26 * i + n for i, n in enumerate(x))
-        self.cols[col] = x
-        return x
-
-    def coords(self, cell):
-        '''Converts Excel coords to 0-based.
-        '''
-        col = ''.join(x for x in cell if x not in digits)
-        row = int(''.join(x for x in cell if x not in col)) - 1
-        col = self.cols.get(col, self.col(col))
-        return col, row
-
-    def cell(self, node):
-        '''Extracts cell's coords.
-        '''
-        return self.coords(node.attrib['r'])
-
     def shape(self):
         '''Returns table dimensions.
         '''
         dim    = self.tree.find('.//main:dimension', **NS)
         nw, se = dim.attrib['ref'].split(':')
-        width, height = (n + 1 for n in self.coords(se))
+        width, height = (n + 1 for n in _coords(se))
         return width, height
 
     def value(self, node):
@@ -161,7 +158,7 @@ class Sheet:
                   for _ in range(self.height)]
 
         for node in self.tree.findall('.//main:c', **NS):
-            col, row = self.cell(node)
+            col, row = _coords(node.attrib['r'])
             value = self.value(node)
             parsed[row][col] = value
 
@@ -174,7 +171,7 @@ class Sheet:
         lastcol = self.width - 1
 
         for node in self.tree.findall('.//main:c', **NS):
-            col, _   = self.cell(node)
+            col, _   = _coords(node.attrib['r'])
             row[col] = self.value(node)
             if col == lastcol:
                 yield row
