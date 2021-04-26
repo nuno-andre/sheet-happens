@@ -6,12 +6,13 @@ https://github.com/nuno-andre/sheet-happens
 Copyright (C) 2017-2021 Nuno André <mail@nunoand.re>
 SPDX-License-Identifier: MIT
 """
-__version__ = '0.0.4'
-__description__ = 'Simple Excel 2007+ to CSV and JSON converter without dependencies'
+__version__ = '0.0.5'
+__description__ = ('Simple Excel 2007+ to CSV and JSON converter without '
+                   'dependencies')
 
 
+from xml.etree.ElementTree import fromstring
 from string import digits, ascii_uppercase
-from xml.etree import ElementTree
 from zipfile import ZipFile, BadZipFile
 from functools import wraps
 from pathlib import Path
@@ -26,6 +27,7 @@ except ImportError:
 
 
 MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 NS = {'namespaces': {'main': MAIN}}
 
 
@@ -44,7 +46,7 @@ def lazyproperty(method):
 
 
 class Book:
-    '''Excel file.
+    '''Excel file (workbook).
 
     Args:
         path: Archive's path.
@@ -53,6 +55,7 @@ class Book:
     def __init__(self, path, sanitize=True):
         self.path     = Path(path).resolve()
         self.sanitize = sanitize
+        self._names   = dict()
 
     def __iter__(self):
         return self.sheets.__iter__()
@@ -65,18 +68,26 @@ class Book:
         '''Shared strings
         '''
         with self.zipfile.open('xl/sharedStrings.xml') as f:
-            tree = ElementTree.fromstring(f.read())
+            tree = fromstring(f.read())
             return [x.text for x in tree.iterfind('.//main:t', **NS)]
 
     @lazyproperty
     def sheets(self):
         sheets = list()
+        tag_id = '{{{}}}id'.format(REL)
+
         with ZipFile(str(self.path), 'r') as z:
+            with z.open('xl/workbook.xml') as f:
+                tree = fromstring(f.read())
+                for s in tree.iterfind('.//main:sheet', **NS):
+                    id = s.get(tag_id).replace('rId', '')
+                    self._names[int(id)] = s.get('name')
             self.zipfile = z
             for path in z.namelist():
                 if path.startswith('xl/worksheets/sheet'):
                     with z.open(path) as f:
                         sheets.append(Sheet(Path(path), f.read(), self))
+            self.shared
         return sheets
 
 
@@ -84,14 +95,17 @@ class Sheet:
     '''Worksheet
     '''
     def __init__(self, path, text, book):
-        self.book    = book
-        self.path    = path
-        self.tree    = ElementTree.fromstring(text)
-        # TODO: current name in "sheetx" form
-        #     search for and sanitize sheet's name
-        self.name    = path.stem
-        self.cols    = dict()
+        self.book = book
+        self.path = path
+        self.tree = fromstring(text)
+        self.cols = dict()
         self.width, self.height = self.shape()
+
+    @lazyproperty
+    def name(self):
+        pad = len(str(list(self.book._names.keys())[-1]))
+        ix  = int(self.path.stem.replace('sheet', ''))
+        return '{i:0{p}}_{n}'.format(i=ix, p=pad, n=self.book._names[ix])
 
     def col(self, col):
         '''Converts and caches a letter-based col to 0-based coord.
@@ -131,7 +145,7 @@ class Sheet:
         else:
             value = v
 
-        if self.book.sanitize:
+        if self.book.sanitize and value:
             return ' '.join(filter(None, value.strip().splitlines()))
         else:
             return value
@@ -177,21 +191,28 @@ class Sheet:
         else:
             return list(self.to_dict())
 
-    def filedes(self, ext, path, mode='w', newline='\n'):
+    def filedes(self, ext, dirpath=None, mode='w', newline='\n'):
         '''Returns a file descriptor.
+
+        Path defaults to:
+          ``<file_path>/<file_stem>/<sheet_no>_<sheet_name>.<ext>``
         '''
-        path = Path(path or self.book.path)
-        if path.is_dir():
-            path = path / self.name
+        if not dirpath:
+            # set excel archive's filename as directory
+            dirpath = self.book.path.parent / self.book.path.stem
         else:
-            name = self.name.replace('sheet', path.stem + '.')
-            path = path.with_name(name)
-        path = path.with_name('{}.{}'.format(path.name, ext))
+            dirpath = Path(dirpath)
+
+        try:
+            dirpath.mkdir(exist_ok=True, parents=True)
+        except FileExistsError:
+            err = f"cannot creake directory '{dirpath}'"
+            raise ValueError(err) from None
+
+        path = dirpath / f'{self.name}.{ext}'
         return open(str(path), mode, newline=newline)
 
     def to_csv(self, path=None):
-        '''Path defaults to `<file_path>/<file_stem>.<sheet_no>.csv`.
-        '''
         with self.filedes('csv', path, 'w', newline='') as f:
             writer = csv.writer(f)
             for row in self.parse():
@@ -200,17 +221,14 @@ class Sheet:
         return True
 
     def to_json(self, path=None):
-        '''Path defaults to `<file_path>/<file_stem>.<sheet_no>.json`.
-        '''
         with self.filedes('json', path, 'w', newline='') as f:
             json.dump(self.dict, f, indent=4, ensure_ascii=False)
             return True
 
     def to_yaml(self, path=None):
-        '''Path defaults to `<file_path>/<file_stem>.<sheet_no>.yaml`.
-        '''
-        with self.filedes('json', path, 'w', newline='') as f:
-            yaml.dump(list(self.to_dict()), default_flow_style=False)
+        with self.filedes('yaml', path, 'w', newline='') as f:
+            f.write(yaml.dump(self.dict, default_flow_style=False,
+                              allow_unicode=True, sort_keys=False))
             return True
 
 
@@ -237,18 +255,17 @@ def main():
         return 1
 
     try:
-        book = Book(path)
-        for sheet in book.sheets:
+        for sheet in Book(path):
             for fmt in fmts:
-                print('Saving {} as {}'.format(sheet.name, fmt))
+                print("Saving '{}' as '{}'".format(sheet.name, fmt))
                 method = 'to_{}'.format(fmt)
                 getattr(sheet, method)()
         return 0
     except BadZipFile:
-        msg = 'ERROR. "{}" is not an Excel 2007+ file'
+        msg = "ERROR. '{}' is not an Excel 2007+ file"
         print(msg.format(path))
     except Exception as e:
-        print('ERROR. {} {}'.format(e, type(e)))
+        print('ERROR. {!r}'.format(e))
         return 1
 
 
