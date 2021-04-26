@@ -26,7 +26,8 @@ from sheet_happens import Book
 
 for sheet in Book(path):
     print('Sheet:', sheet.name)
-    for row in sheet.to_dict():
+    # print a dict {field:value} for each row
+    for row in sheet:
         print(row)
 ```
 

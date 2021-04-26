@@ -119,6 +119,12 @@ class Sheet:
         self.tree = fromstring(text)
         self.width, self.height = self.shape()
 
+    def __iter__(self):
+        return self.dict.__iter__()
+
+    def __next__(self):
+        return next(self.__iter__())
+
     @lazyproperty
     def name(self):
         pad = len(str(list(self.book._names.keys())[-1]))
