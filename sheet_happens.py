@@ -3,10 +3,10 @@
 Sheet Happens
 https://github.com/nuno-andre/sheet-happens
 
-Copyright (C) 2017 Nuno André <mail@nunoand.re>
+Copyright (C) 2017-2021 Nuno André <mail@nunoand.re>
 SPDX-License-Identifier: MIT
 """
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 __description__ = 'Simple Excel 2007+ to CSV and JSON converter without dependencies'
 
 
@@ -24,20 +24,27 @@ except ImportError:
     yaml = None
 
 
-ns = {'main': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-NS = {'namespaces': ns}
+MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+NS = {'namespaces': {'main': MAIN}}
 
 
 class Book:
-    '''Excel file  
+    '''Excel file.
 
-    :param path: Archive's path  
-    :param sanitize: Trims strings and replaces line feeds with whitespaces
+    Args:
+        path: Archive's path
+        sanitize: Trims strings and replaces line feeds with whitespaces.
     '''
     def __init__(self, path, sanitize=True):
         self.path     = Path(path).resolve()
         self.sanitize = sanitize
         self._shared  = None
+
+    def __iter__(self):
+        return self.sheets.__iter__()
+
+    def __next__(self):
+        return next(self.__iter__())
 
     @property
     def shared(self):
@@ -59,6 +66,7 @@ class Book:
                     with z.open(path) as f:
                         yield Sheet(Path(path), f.read(), self)
 
+
 class Sheet:
     '''Worksheet
     '''
@@ -74,7 +82,6 @@ class Sheet:
         self._parsed = None
         self.width, self.height = self.shape()
 
-
     def col(self, col):
         '''Converts and caches a letter-based col to 0-based coord
         '''
@@ -82,7 +89,6 @@ class Sheet:
         x = sum(26 * i + n for i, n in enumerate(x))
         self.cols[col] = x
         return x
-
 
     def coords(self, cell):
         '''Converts Excel coords to 0-based
@@ -92,12 +98,10 @@ class Sheet:
         col = self.cols.get(col, self.col(col))
         return col, row
 
-
     def cell(self, node):
         '''Extracts cell's coords
         '''
         return self.coords(node.attrib['r'])
-
 
     def shape(self):
         '''Returns table dimensions
@@ -106,7 +110,6 @@ class Sheet:
         nw, se = dim.attrib['ref'].split(':')
         width, height = [n + 1 for n in self.coords(se)]
         return width, height
-
 
     def value(self, node):
         '''Returns cell's value
@@ -136,7 +139,6 @@ class Sheet:
                 self._parsed[row][col] = value
         return self._parsed
 
-
     def parse(self):
         '''Returns a parsed rows generator
         '''
@@ -151,14 +153,12 @@ class Sheet:
                 yield row
                 row = [None for _ in range(self.width)]
 
-
     def to_dict(self):
         '''Returns a list of dicts generator
         '''
         output = self.parse()
         header = next(output)
         return (dict(zip(header, row)) for row in output)
-
 
     @property
     def dict(self):
@@ -169,7 +169,6 @@ class Sheet:
             else:
                 self._dict = list(self.to_dict())
         return self._dict
-
 
     def filedes(self, ext, path, mode='w', newline='\n'):
         '''Returns a file descriptor
@@ -183,7 +182,6 @@ class Sheet:
         path = path.with_name('{}.{}'.format(path.name, ext))
         return open(str(path), mode, newline=newline)
 
-             
     def to_csv(self, path=None):
         '''Path defaults to <file_path>/<file_stem>.<sheet_no>.csv
         '''
@@ -194,14 +192,12 @@ class Sheet:
                 writer.writerow(row)
         return True
 
-
     def to_json(self, path=None):
         '''Path defaults to <file_path>/<file_stem>.<sheet_no>.json
         '''
         with self.filedes('json', path, 'w', newline='') as f:
             json.dump(self.dict, f, indent=4, ensure_ascii=False)
             return True
-
 
     def to_yaml(self, path=None):
         '''Path defaults to <file_path>/<file_stem>.<sheet_no>.yaml
@@ -232,7 +228,7 @@ def main():
         print('\nERROR. Choose at least one output format.\n')
         p.print_help()
         return 1
-    
+
     try:
         book = Book(path)
         for sheet in book.sheets:
@@ -247,6 +243,7 @@ def main():
     except Exception as e:
         print('ERROR. {} {}'.format(e, type(e)))
         return 1
+
 
 if __name__ == '__main__':
     import sys

@@ -22,7 +22,7 @@ Output path is `<file_path>/<file_stem>.<sheet_no>.<format>`
 ```
 from sheet_happens import Book
 
-for sheet in Book(path).sheets:
+for sheet in Book(path):
     print('Sheet:', sheet.name)
     for row in sheet.to_dict():
         print(row)
@@ -33,4 +33,4 @@ for sheet in Book(path).sheets:
 If [`PyYAML`](https://github.com/yaml/pyyaml) is available, _Sheet Happens_ will add a `--yaml` option.
 
 ---
-Copyright &copy; 2017 Nuno André <<mail@nunoand.re>>
+Copyright &copy; 2017-2021 Nuno André <<mail@nunoand.re>>
