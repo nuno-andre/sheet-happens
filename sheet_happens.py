@@ -6,7 +6,7 @@ https://github.com/nuno-andre/sheet-happens
 Copyright (C) 2017-2021 Nuno André <mail@nunoand.re>
 SPDX-License-Identifier: MIT
 """
-__version__ = '0.0.5'
+__version__ = 0, 0, 5
 __description__ = ('Simple Excel 2007+ to CSV and JSON converter without '
                    'dependencies')
 
@@ -133,17 +133,20 @@ class Sheet:
         '''
         dim    = self.tree.find('.//main:dimension', **NS)
         nw, se = dim.attrib['ref'].split(':')
-        width, height = [n + 1 for n in self.coords(se)]
+        width, height = (n + 1 for n in self.coords(se))
         return width, height
 
     def value(self, node):
         '''Returns cell's value.
         '''
-        v = node.find('.//main:v', **NS).text
-        if node.attrib.get('t') == 's':
-            value = self.book.shared[int(v)]
-        else:
-            value = v
+        try:
+            v = node.find('.//main:v', **NS).text
+            if node.attrib.get('t') == 's':
+                value = self.book.shared[int(v)]
+            else:
+                value = v
+        except AttributeError:
+            value = None
 
         if self.book.sanitize and value:
             return ' '.join(filter(None, value.strip().splitlines()))
@@ -159,7 +162,8 @@ class Sheet:
 
         for node in self.tree.findall('.//main:c', **NS):
             col, row = self.cell(node)
-            parsed[row][col] = self.value(node)
+            value = self.value(node)
+            parsed[row][col] = value
 
         return parsed
 
@@ -197,11 +201,11 @@ class Sheet:
         Path defaults to:
           ``<file_path>/<file_stem>/<sheet_no>_<sheet_name>.<ext>``
         '''
-        if not dirpath:
+        if dirpath:
+            dirpath = Path(dirpath)
+        else:
             # set excel archive's filename as directory
             dirpath = self.book.path.parent / self.book.path.stem
-        else:
-            dirpath = Path(dirpath)
 
         try:
             dirpath.mkdir(exist_ok=True, parents=True)
@@ -268,6 +272,8 @@ def main():
         print('ERROR. {!r}'.format(e))
         return 1
 
+
+__all__ = ['Book', 'Sheet']
 
 if __name__ == '__main__':
     import sys
